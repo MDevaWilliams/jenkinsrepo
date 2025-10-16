@@ -1,0 +1,68 @@
+node {
+    // Load environment variables
+    def app_name = "myapp"
+    def branch_name = "main"
+    def server_ip = "10.10.10.25"
+    def deploy_path = "/opt/apps/${app_name}"
+
+    stage('Checkout') {
+        echo "Checking out source code from Git..."
+        git branch: branch_name, url: 'https://github.com/company/myapp.git'
+    }
+
+    stage('Install Dependencies') {
+        echo "Installing dependencies..."
+        sh '''
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install -r requirements.txt
+        '''
+    }
+
+    stage('Static Code Analysis') {
+        echo "Running code quality check using pylint..."
+        sh '''
+            source venv/bin/activate
+            pylint app/ || true
+        '''
+    }
+
+    stage('Unit Test') {
+        echo "Running unit tests..."
+        sh '''
+            source venv/bin/activate
+            pytest --junitxml=reports/result.xml
+        '''
+        junit 'reports/result.xml'
+    }
+
+    stage('Build Artifact') {
+        echo "Packaging the application..."
+        sh '''
+            mkdir -p build
+            cp -r app build/
+            tar -czf ${app_name}.tar.gz build/
+        '''
+        archiveArtifacts artifacts: "${app_name}.tar.gz", fingerprint: true
+    }
+
+    stage('Deploy to Server') {
+        echo "Deploying ${app_name} to ${server_ip}..."
+        sh """
+            scp ${app_name}.tar.gz ubuntu@${server_ip}:${deploy_path}/
+            ssh ubuntu@${server_ip} 'cd ${deploy_path} && tar -xzf ${app_name}.tar.gz && systemctl restart myapp'
+        """
+    }
+
+    stage('Post-Deployment Validation') {
+        echo "Checking if the application is running..."
+        sh """
+            ssh ubuntu@${server_ip} 'curl -f http://localhost:8080/health || exit 1'
+        """
+    }
+
+    stage('Clean Workspace') {
+        echo "Cleaning up Jenkins workspace..."
+        cleanWs()
+    }
+}
