@@ -1,0 +1,120 @@
+pipeline {
+    agent any
+
+    // Parameters to make it flexible for dev/test/prod
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch to build')
+        choice(name: 'ENV', choices: ['dev', 'staging', 'prod'], description: 'Deployment environment')
+    }
+
+    environment {
+        APP_NAME = 'mern-app'
+        BACKEND_PORT = 5000
+        FRONTEND_PORT = 3000
+        DEPLOY_CLUSTER = "${params.ENV}"  // could be dev/staging/prod cluster
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "Checking out branch: ${params.BRANCH}"
+                git branch: "${params.BRANCH}", url: 'https://github.com/example/mern-app.git'
+            }
+        }
+
+        stage('Build Backend') {
+            steps {
+                dir('backend') {
+                    echo 'Installing backend dependencies...'
+                    sh 'npm install'
+                    echo 'Starting backend in background...'
+                    sh 'nohup npm start &'
+                }
+            }
+        }
+
+        stage('Build Frontend') {
+            steps {
+                dir('frontend') {
+                    echo 'Installing frontend dependencies...'
+                    sh 'npm install'
+                    echo 'Building frontend...'
+                    sh 'npm run build'
+                    echo 'Starting frontend in background...'
+                    sh 'nohup npm start &'
+                }
+            }
+        }
+
+        stage('API Tests - Pytest') {
+            steps {
+                echo 'Running API tests using Pytest...'
+                sh '''
+                    pip install -r requirements.txt
+                    pytest tests/api_tests/ --maxfail=1 --disable-warnings -q --junitxml=reports/api_results.xml
+                '''
+                junit 'reports/api_results.xml'
+            }
+        }
+
+        stage('UI Tests - Robot Framework') {
+            steps {
+                echo 'Running UI tests using Robot Framework...'
+                sh '''
+                    pip install robotframework seleniumlibrary
+                    robot --outputdir reports/ui_results tests/ui_tests/
+                '''
+                publishHTML([reportDir: 'reports/ui_results', reportFiles: 'report.html', reportName: 'UI Test Report'])
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                echo 'Building Docker images for backend and frontend...'
+                sh '''
+                    docker build -t mern-app-backend:latest backend/
+                    docker build -t mern-app-frontend:latest frontend/
+                '''
+            }
+        }
+
+        stage('Push Docker Images') {
+            steps {
+                echo "Pushing Docker images to registry..."
+                sh '''
+                    docker tag mern-app-backend:latest registry.example.com/${APP_NAME}-backend:latest
+                    docker tag mern-app-frontend:latest registry.example.com/${APP_NAME}-frontend:latest
+                    docker push registry.example.com/${APP_NAME}-backend:latest
+                    docker push registry.example.com/${APP_NAME}-frontend:latest
+                '''
+            }
+        }
+
+        stage('Deploy to Cluster') {
+            steps {
+                echo "Deploying MERN app to ${params.ENV} cluster..."
+                sh '''
+                    # Example for Kubernetes deployment
+                    kubectl set image deployment/mern-backend mern-backend=registry.example.com/${APP_NAME}-backend:latest --namespace=${DEPLOY_CLUSTER}
+                    kubectl set image deployment/mern-frontend mern-frontend=registry.example.com/${APP_NAME}-frontend:latest --namespace=${DEPLOY_CLUSTER}
+                    kubectl rollout status deployment/mern-backend --namespace=${DEPLOY_CLUSTER}
+                    kubectl rollout status deployment/mern-frontend --namespace=${DEPLOY_CLUSTER}
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Cleaning up workspace...'
+            sh 'pkill -f node || true'
+            cleanWs()
+        }
+        success {
+            echo '✅ Pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed. Check logs!'
+        }
+    }
+}
